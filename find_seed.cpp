@@ -98,6 +98,7 @@ class QCDecrypt {
     uint16_t   qc_seed_idx;
     uint16_t   qc_ivec_idx;
 
+    public:
     void quake_decrypt_init(uint8_t *key, uint64_t seed2) {
         unsigned int i;
         for(i = 0; i < sizeof(qc_ivec); i++) {
@@ -109,7 +110,6 @@ class QCDecrypt {
         NrRandom(qc_seed ^ seed2);
     }
 
-    public:
     QCDecrypt(uint8_t *key, uint seed2) {
         quake_decrypt_init(key, seed2);
     }
@@ -198,8 +198,9 @@ int main(int argc, char *argv[]) {
                     cout << " To   " << hex << to << dec << endl;
                 }
 
+        QCDecrypt qc(key.data(), 0);
         for (seed = from; !found && seed < to; ++seed) {
-            QCDecrypt qc(key.data(), seed);
+            qc.quake_decrypt_init(key.data(), seed);
 
             bool all_match = true;
             ifile.seekg(header.central_offset, ios_base::beg);
