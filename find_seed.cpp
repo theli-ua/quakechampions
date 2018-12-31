@@ -74,7 +74,7 @@ class QCDecrypt {
     private:
     uint64_t u, v, w;
 
-    ulong NextUInt64()
+    uint64_t NextUInt64()
     {
         u = u * 2862933555777941757ULL + 7046029254386353087ULL;
         v ^= v >> 17; v ^= v << 31; v ^= v >> 8;
@@ -100,17 +100,14 @@ class QCDecrypt {
 
     public:
     void quake_decrypt_init(uint8_t *key, uint64_t seed2) {
-        unsigned int i;
-        for(i = 0; i < sizeof(qc_ivec); i++) {
-            qc_ivec[i] = key[i];
-        }
+        memcpy(qc_ivec, key, sizeof(qc_ivec));
         qc_seed = *(uint64_t *)(key);
         qc_seed_idx = 0;
         qc_ivec_idx = 0;
         NrRandom(qc_seed ^ seed2);
     }
 
-    QCDecrypt(uint8_t *key, uint seed2) {
+    QCDecrypt(uint8_t *key, uint64_t seed2) {
         quake_decrypt_init(key, seed2);
     }
     int quake_decrypt(uint8_t *data, uint8_t* output, int size) {
@@ -194,8 +191,8 @@ int main(int argc, char *argv[]) {
         //from = 8041504;
         //
         //from = 0x6F01BCCC;
-        from = 0x6EA00000;
-        uint32_t to = (tid == nthreads -1 ? 0xFFFFFFFF : per_thread * (tid+1));
+        //from = 0x6EA00000;
+        uint32_t to = (tid == nthreads - 1 ? 0xFFFFFFFF : per_thread * (tid+1));
 
 #pragma omp critical
                 {
@@ -211,7 +208,7 @@ int main(int argc, char *argv[]) {
 
             bool all_match = true;
             unsigned int index = 0;
-            for (int i = 0; i < 8; ++i) {
+            for (int i = 0; i < 3; ++i) {
                 entry_header_t *encrypted_entry;
                 entry_header_t entry;
                 encrypted_entry = (entry_header_t*)(buffer.data() + index);
@@ -264,6 +261,12 @@ int main(int argc, char *argv[]) {
                 percent ++;
             }
         }
+#pragma omp critical
+        {
+            cout << "Thread " << dec << tid;
+            cout << " Done   " << endl;
+        }
+
     }
 
 }
