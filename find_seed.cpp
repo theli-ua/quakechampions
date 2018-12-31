@@ -191,6 +191,7 @@ int main(int argc, char *argv[]) {
         //from = 8041504;
         //
         //from = 0x6F01BCCC;
+        //from = 0x6F00BCCC;
         //from = 0x6EA00000;
         uint32_t to = (tid == nthreads - 1 ? 0xFFFFFFFF : per_thread * (tid+1));
 
