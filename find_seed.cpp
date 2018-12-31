@@ -168,13 +168,17 @@ int main(int argc, char *argv[]) {
     cout << "sizeof entry header " << hex << sizeof(entry_header_t) << dec << endl;
     cout << "Header has " << header.central_entries << " entries"<<endl;
 
+    array<uint8_t, 0x400> buffer;
+    ifile.seekg(header.central_offset, ios_base::beg);
+    ifile.read((char*)buffer.data(), buffer.size());
+
+
 
     std::atomic_uint32_t progress;
     std::atomic_bool found;
 
 #pragma omp parallel
     {
-        ifstream ifile(fname, ios::in | ios::binary);
         
         unsigned int percent = 0;
         int nthreads, tid;
@@ -183,12 +187,14 @@ int main(int argc, char *argv[]) {
         nthreads = omp_get_num_threads();
         uint32_t per_thread = 0xFFFFFFFF / nthreads;
         uint32_t from = per_thread * tid;
-        from = 0x412e2206;
+        //from = 0x412e2206;
         //from = 0x631A2028;
         //from = 0x0F10C856F;
-        from = 0x6F01BCCC;
         //from = 0x0;
         //from = 8041504;
+        //
+        //from = 0x6F01BCCC;
+        from = 0x6EA00000;
         uint32_t to = (tid == nthreads -1 ? 0xFFFFFFFF : per_thread * (tid+1));
 
 #pragma omp critical
@@ -199,20 +205,33 @@ int main(int argc, char *argv[]) {
                 }
 
         QCDecrypt qc(key.data(), 0);
+        array<char, 0x4000> tmp;
         for (seed = from; !found && seed < to; ++seed) {
             qc.quake_decrypt_init(key.data(), seed);
 
             bool all_match = true;
-            ifile.seekg(header.central_offset, ios_base::beg);
-            for (int i = 0; i < 2; ++i) {
+            unsigned int index = 0;
+            for (int i = 0; i < 8; ++i) {
+                entry_header_t *encrypted_entry;
                 entry_header_t entry;
-                ifile.read((char*) &entry, sizeof(entry_header_t));
-                qc.quake_decrypt((uint8_t*)&entry, (uint8_t*)&entry, sizeof(entry_header_t));
-                char* name = new char[entry.name_len + 1];
-                ifile.read((char*) name, entry.name_len);
-                ifile.seekg(entry.extra_len, ios_base::cur);
-                ifile.seekg(entry.comm_len, ios_base::cur);
-                qc.quake_decrypt((uint8_t*)name, (uint8_t*)name, entry.name_len);
+                encrypted_entry = (entry_header_t*)(buffer.data() + index);
+                index += sizeof(entry_header_t);
+                qc.quake_decrypt((uint8_t*)encrypted_entry, (uint8_t*)&entry, sizeof(entry_header_t));
+                if (entry.name_len + entry.extra_len + entry.comm_len + index > buffer.size()) {
+                    all_match = false;
+                    break;
+                }
+                char *name = (char*)(buffer.data() + index);
+                qc.quake_decrypt((uint8_t*)name, (uint8_t*)tmp.data(), entry.name_len);
+                if (!all_of(tmp.data(), tmp.data()+entry.name_len, [] (char c) -> bool {return isprint(c);})) {
+                    all_match = false;
+                    break;
+                }
+                index += entry.name_len;
+                index += entry.extra_len;
+                index += entry.comm_len;
+#if 0
+                name = (char*)tmp.data();
 #pragma omp critical
                 {
                 cout <<"entry:"<<  i << endl;
@@ -221,9 +240,9 @@ int main(int argc, char *argv[]) {
                 cout <<"name_len:"<<  entry.name_len << endl;
                 cout <<"magic:"<<  hex << entry.magic << dec << endl;
                 }
-                delete[] name;
+#endif
                 if (entry.magic != entry_magic) {
-                    //all_match = false;
+                    all_match = false;
                     break;
                 }
             }
@@ -232,9 +251,9 @@ int main(int argc, char *argv[]) {
                 found = true;
 #pragma omp critical
                 {
+                    cout << "++++++++++++++++++++++++++++++++" << endl;
                     cout << "Found seed: " << hex << seed<< dec << endl;
-                    //cout << "AAAAA   " << hex << entries_plain[0].magic << endl;
-                    //cout << "BBBBB   " << hex << entries_plain[1].magic << endl;
+                    cout << "++++++++++++++++++++++++++++++++" << endl;
                 }
                 break;
             }
