@@ -63,6 +63,7 @@ typedef struct {
 } entry_header_t;
 #pragma pack(pop)
 
+
 typedef struct {
     uint64_t u, v, w;
     uint64_t    qc_seed;
@@ -91,24 +92,38 @@ void NrRandom(qc_state_t *qc_state, uint64_t seed)
     qc_state->w = qc_state->v;        NextUInt64(qc_state);
 }
 
-void quake_decrypt_init(qc_state_t *qc_state, const uint8_t key[32], uint64_t seed2) {
+void quake_decrypt_init(qc_state_t *qc_state, __local const uint8_t key[32], uint64_t seed2) {
     for (int i=0; i < sizeof(qc_state->qc_ivec); ++i) {
         qc_state->qc_ivec[i] = key[i];
     }
     /*qc_state = key;*/
-    qc_state->qc_seed = *(const uint64_t *)(key);
+    qc_state->qc_seed = *(__local const uint64_t *)(key);
     qc_state->qc_seed_idx = 0;
     qc_state->qc_ivec_idx = 0;
     NrRandom(qc_state, qc_state->qc_seed ^ seed2);
 }
 
-int quake_decrypt(qc_state_t *qc_state, __const uint8_t *data, uint8_t* output, int size) {
+int quake_decrypt(qc_state_t *qc_state, __local __const uint8_t *data, uint8_t* output, int size) {
     for(int i = 0; i < size; i++) {
         uint8_t c = data[i];
         uint8_t old = qc_state->qc_ivec[qc_state->qc_ivec_idx];
         qc_state->qc_ivec[qc_state->qc_ivec_idx] = c;
         if(output) 
             output[i] = (qc_state->qc_seed_idx ? 0 : qc_state->qc_seed) ^ c ^ old;
+        qc_state->qc_ivec_idx = (qc_state->qc_ivec_idx + 1) & 0x1f;
+        if(++qc_state->qc_seed_idx == 8) {
+            /*qc_state->qc_seed = NextUInt64(qc_state);*/
+            qc_state->qc_seed_idx = 0;
+        }
+    }
+    return size;
+}
+
+int quake_decrypt_noout(qc_state_t *qc_state, __local __const uint8_t *data, int size) {
+    for(int i = 0; i < size; i++) {
+        uint8_t c = data[i];
+        uint8_t old = qc_state->qc_ivec[qc_state->qc_ivec_idx];
+        qc_state->qc_ivec[qc_state->qc_ivec_idx] = c;
         qc_state->qc_ivec_idx = (qc_state->qc_ivec_idx + 1) & 0x1f;
         if(++qc_state->qc_seed_idx == 8) {
             qc_state->qc_seed = NextUInt64(qc_state);
@@ -118,21 +133,22 @@ int quake_decrypt(qc_state_t *qc_state, __const uint8_t *data, uint8_t* output, 
     return size;
 }
 
-#define ENTRIES_TO_CHECK 8
-#define BUFFER_SIZE 4000
+#define ENTRIES_TO_CHECK 4
+#define BUFFER_SIZE 1024
 #define ENTRY_MAGIC 0x02014b50
 
-#define SEEDS_PER_ITERATION 128
-__kernel void find_seed(__global const uint8_t _key[32], __global const uint8_t _input[BUFFER_SIZE], __global uint8_t *output_seeds) {
+#define SEEDS_PER_ITERATION 4096
+/*__kernel void find_seed(__global const uint8_t _key[32], __global const uint8_t _input[BUFFER_SIZE], __global uint32_t *output_seed) {*/
+__kernel void find_seed(__global const uint8_t _key[32], __global const uint8_t _input[BUFFER_SIZE], __global uint32_t *output_seed) {
  
     int global_id = get_global_id(0);
     int local_id = get_local_id(0);
     uint64_t seed = global_id * SEEDS_PER_ITERATION;
-    uint8_t key[32];
+    __local uint8_t key[32];
     for (int x=0; x < sizeof(key); x++) {
         key[x] = _key[x];
     }
-    uint8_t input[BUFFER_SIZE];
+    __local uint8_t input[BUFFER_SIZE];
     for (int x=0; x < sizeof(input); x++) {
         input[x] = _input[x];
     }
@@ -144,7 +160,7 @@ __kernel void find_seed(__global const uint8_t _key[32], __global const uint8_t 
 #if 1
         quake_decrypt_init(&qc_state, key, seed + i);
         for (matched = 0; matched < ENTRIES_TO_CHECK; ++matched) {
-            const entry_header_t *entry = (const entry_header_t*)(input + pos);
+            __local const entry_header_t *entry = (__local const entry_header_t*)(input + pos);
             pos += sizeof(entry_header_t);
             entry_header_t plain_entry;
             quake_decrypt(&qc_state, entry, &plain_entry, sizeof(entry_header_t));
@@ -154,7 +170,7 @@ __kernel void find_seed(__global const uint8_t _key[32], __global const uint8_t 
             }
             if (plain_entry.name_len + pos + plain_entry.extra_len + plain_entry.comm_len > BUFFER_SIZE)
                 break;
-            quake_decrypt(&qc_state, input + pos, NULL, plain_entry.name_len);
+            quake_decrypt_noout(&qc_state, input + pos, plain_entry.name_len);
             pos += plain_entry.name_len;
             pos += plain_entry.extra_len;
             pos += plain_entry.comm_len;
@@ -167,7 +183,7 @@ __kernel void find_seed(__global const uint8_t _key[32], __global const uint8_t 
         /*}*/
         /*output_seeds[seed / 8] = (1 << (seed % 8));*/
         if (matched == ENTRIES_TO_CHECK) {
-            output_seeds[(seed + i) / 8] = (1 << ((seed + i) % 8));
+            *output_seed = seed + i;
         }
     }
 }

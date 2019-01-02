@@ -24,29 +24,30 @@ typedef struct {
 #pragma pack(pop)
 
 const static uint32_t magic = 0x06064b50;
-#define BUFFER_SIZE 0x4000
+#define BUFFER_SIZE 1024
+#define FOOTER_BUFFER_SIZE 0x4000
 
 int main(int argc, const char* argv[]) {
     (void)argc;
     const char* fname = argv[1];
     FILE *fp;
     fp = fopen(fname, "rb");
-    uint8_t *footer = (uint8_t*)malloc(BUFFER_SIZE);
+    uint8_t *footer = (uint8_t*)malloc(FOOTER_BUFFER_SIZE);
 
-    fseek(fp,-BUFFER_SIZE, SEEK_END);
-    fread(footer, 1, BUFFER_SIZE, fp);
+    fseek(fp,-FOOTER_BUFFER_SIZE, SEEK_END);
+    fread(footer, 1, FOOTER_BUFFER_SIZE, fp);
 
-    main_header_t *header = (main_header_t*)memmem(footer, BUFFER_SIZE, &magic, sizeof(magic));
+    main_header_t *header = (main_header_t*)memmem(footer, FOOTER_BUFFER_SIZE, &magic, sizeof(magic));
     if (!header) {
         printf("Could not find footer\n");
         exit(1);
     }
     uint8_t *buffer = (uint8_t*)malloc(BUFFER_SIZE);
-    uint8_t *key = footer + (BUFFER_SIZE - 40);
+    uint8_t *key = footer + (FOOTER_BUFFER_SIZE - 40);
     fseek(fp, header->central_offset, SEEK_SET);
     fread(buffer, 1, BUFFER_SIZE, fp);
 
-    uint8_t *SEED_RESULTS = (uint8_t*)calloc(1, 0xFFFFFFFF / 8);
+    uint32_t SEED_RESULT = 0;
  
     // Load the kernel source code into the array source_str
     char *source_str;
@@ -85,22 +86,27 @@ int main(int argc, const char* argv[]) {
     cl_command_queue command_queue = clCreateCommandQueue(context, device_id, 0, &ret);
  
     // Create memory buffers on the device for each vector 
-    cl_mem key_mem_obj = clCreateBuffer(context, CL_MEM_READ_ONLY, 
+    cl_mem key_mem_obj = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR, 
             32, NULL, &ret);
-    cl_mem input_mem_obj = clCreateBuffer(context, CL_MEM_READ_ONLY,
+    cl_mem input_mem_obj = clCreateBuffer(context, CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR,
             BUFFER_SIZE, NULL, &ret);
-    cl_mem seeds_mem_obj = clCreateBuffer(context, CL_MEM_READ_WRITE, 
-            0xFFFFFFFF / 8, NULL, &ret);
+    cl_mem seeds_mem_obj = clCreateBuffer(context, CL_MEM_WRITE_ONLY, 
+            sizeof(SEED_RESULT), NULL, &ret);
  
-    ret = clEnqueueWriteBuffer(command_queue, key_mem_obj, CL_TRUE, 0,
-            32, key, 0, NULL, NULL);
-    ret = clEnqueueWriteBuffer(command_queue, input_mem_obj, CL_TRUE, 0, 
-            BUFFER_SIZE, buffer, 0, NULL, NULL);
+    /*ret = clEnqueueWriteBuffer(command_queue, key_mem_obj, CL_TRUE, 0,*/
+            /*32, key, 0, NULL, NULL);*/
+    /*ret = clEnqueueWriteBuffer(command_queue, input_mem_obj, CL_TRUE, 0, */
+            /*BUFFER_SIZE, buffer, 0, NULL, NULL);*/
+    /*ret = clEnqueueWriteBuffer(command_queue, seeds_mem_obj, CL_TRUE, 0, */
+            /*sizeof(SEED_RESULT), &SEED_RESULT, 0, NULL, NULL);*/
+    uint8_t *key_mem_objp = (uint8_t*)clEnqueueMapBuffer(command_queue, key_mem_obj, CL_TRUE, CL_MAP_WRITE, 0, 32, 0, NULL, NULL, NULL);
+    memcpy(key_mem_objp, key, 32);
+    clEnqueueUnmapMemObject(command_queue, key_mem_obj, key_mem_objp, 0, NULL, NULL);
+    uint8_t *input_mem_objp = (uint8_t*)clEnqueueMapBuffer(command_queue, input_mem_obj, CL_TRUE, CL_MAP_WRITE, 0, BUFFER_SIZE, 0, NULL, NULL, NULL);
+    memcpy(input_mem_objp, buffer, BUFFER_SIZE);
+    clEnqueueUnmapMemObject(command_queue, input_mem_obj, input_mem_objp, 0, NULL, NULL);
 
 
-
-    ret = clEnqueueWriteBuffer(command_queue, seeds_mem_obj, CL_TRUE, 0, 
-            0xFFFFFFFF / 8, SEED_RESULTS, 0, NULL, NULL);
  
     // Create a program from the kernel source
     cl_program program = clCreateProgramWithSource(context, 1, 
@@ -129,37 +135,47 @@ int main(int argc, const char* argv[]) {
     // Execute the OpenCL kernel on the list
     /*for (uint64_t seed = 0x6F01BCCC; seed < 0xFFFFFFFF; seed += workgroup_size) {*/
     size_t global_item_size = workgroup_size;
-    size_t local_item_size = 32;
-#define SEEDS_PER_ITERATION 128
+    size_t local_item_size = 64;
+#define SEEDS_PER_ITERATION 4096
+    unsigned int percent = 0;
     for (uint64_t seed = 0; seed < 0xFFFFFFFF / SEEDS_PER_ITERATION ; seed += workgroup_size) {
+    /*for (uint64_t seed = 0x6F01B000 / SEEDS_PER_ITERATION; seed <0xFFFFFFFF / SEEDS_PER_ITERATION ; seed += workgroup_size) {*/
         size_t global_offset = seed;
         ret = clEnqueueNDRangeKernel(command_queue, kernel, 1, &global_offset, 
                 &global_item_size, &local_item_size, 0, NULL, NULL);
         if (ret != CL_SUCCESS) {
             printf("Error sending work to GPU ret: %d\n", ret);
+            break;
         }
-        printf("\rProgress %f%%", (double)seed * 100 * SEEDS_PER_ITERATION / 0xFFFFFFFF);
+        
+        if (percent < (double)seed * 100 * SEEDS_PER_ITERATION / 0xFFFFFFFF) {
+#if 1
+        printf("\rProgress %f%% ", (double)seed * 100 * SEEDS_PER_ITERATION / 0xFFFFFFFF);
+            percent ++;
+            /*if (percent % 10) {*/
+                ret = clEnqueueReadBuffer(command_queue, seeds_mem_obj, CL_TRUE, 0, 
+                        sizeof(SEED_RESULT), &SEED_RESULT, 0, NULL, NULL);
+                fflush(stdout);
+                if(SEED_RESULT)  {
+                    printf("\nFound seed: 0x%X\n", SEED_RESULT);
+                    break;
+                }
+            /*}*/
+#endif
+        }
 
-        fflush(stdout);
         /*break;*/
         // Display the result to the screen
  
     }
-    printf("\n");
+    /*printf("Done enqueueing work\n");*/
         
     // Read the memory buffer C on the device to the local variable C
-    ret = clEnqueueReadBuffer(command_queue, seeds_mem_obj, CL_TRUE, 0, 
-            0xFFFFFFFF / 8, SEED_RESULTS, 0, NULL, NULL);
+    /*ret = clEnqueueReadBuffer(command_queue, seeds_mem_obj, CL_TRUE, 0, */
+            /*sizeof(SEED_RESULT), &SEED_RESULT, 0, NULL, NULL);*/
  
-    for(unsigned int i = 0; i < 0xFFFFFFFF / 8; i++) {
-        if (SEED_RESULTS[i]) {
-            for (int subi = 0; subi < 8; ++subi) {
-                if (SEED_RESULTS[i] & (1 << subi))
-                    printf("Found seed: 0x%X\n", i * 8 + subi);
-            }
-            /*goto done;*/
-        }
-    }
+    /*if(SEED_RESULT) */
+        /*printf("Found seed: 0x%X\n", SEED_RESULT);*/
 
  
     // Clean up
